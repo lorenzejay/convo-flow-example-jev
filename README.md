@@ -6,6 +6,8 @@ A small, runnable example that uses TypeSafe's Jev model to route support turns 
 
 **The GIF shows the earlier three-turn, route-only illustration. Its timings, costs, probabilities and confidence scores are authored, not live measurements.** The Python program now makes actual Jev requests for three questions per turn and prints the returned answers, measured request latency and estimated cost.
 
+Open the [animated HTML diagram](docs/flow-diagram.html) locally for the current four-turn flow, including the three Jev questions, the item-readiness rule and CrewAI handler dispatch. Its answers and replies are illustrative; it makes no API calls.
+
 ## Run with Jev
 
 Requires Python 3.11–3.13, [uv](https://docs.astral.sh/uv/getting-started/installation/), and a TypeSafe API key.
@@ -64,7 +66,7 @@ handle_turn(message)
   → append assistant reply and retain session state
 ```
 
-Returning a non-empty route from `route_turn()` bypasses CrewAI's built-in LLM router. The `@listen` handler appends the assistant message; all turns share one session ID.
+Returning a non-empty route from `route_turn()` bypasses CrewAI's built-in LLM classifier while still using its `route_conversation` dispatch and session lifecycle. The `@listen` handler appends the assistant message; all turns share one session ID. This example never selects CrewAI's built-in `converse` route, so its generation handler is outside the evaluation. The no-key smoke check and live demo verify dispatch to the three custom handlers; the 31-case model comparison calls providers directly.
 
 A Jev Choice answer contains:
 
@@ -98,6 +100,7 @@ The flow lifecycle is checked with mocked responses, and the [support evaluation
 - `smoke_check.py`: no-key lifecycle and item-readiness check.
 - `eval_router.py` and `eval_cases.json`: support readiness comparison and authored cases.
 - `docs/support-evaluation.md`: payload audit and live readiness results.
+- `docs/flow-diagram.html`: interactive four-turn walkthrough; open locally in a browser.
 - `docs/demo.gif`: 18-second, 1080p walkthrough.
 
 ## References

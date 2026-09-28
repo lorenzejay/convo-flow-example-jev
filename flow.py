@@ -144,10 +144,18 @@ if __name__ == "__main__":
         raise SystemExit("Set TYPESAFE_API_KEY locally. No API requests were made.")
     flow = SupportFlow()
     session_id = str(uuid4())
+    expected_replies = {
+        "order": f"I can check delivery for order #{SCENARIO['order']['id']}.",
+        "returns": "I can help with that item's return. No return has been started.",
+        "clarify": "Which order item do you mean, and what would you like help with?",
+    }
     try:
-        for message in [turn["message"] for turn in SCENARIO["turns"]]:
-            print(f"\nCustomer: {message}")
-            print(f"Support: {flow.handle_turn(message, session_id=session_id)}")
+        for turn in SCENARIO["turns"]:
+            print(f"\nCustomer: {turn['message']}")
+            reply = flow.handle_turn(turn["message"], session_id=session_id)
+            print(f"Support: {reply}")
+            assert flow.state.last_intent == turn["route"], "CrewAI selected the wrong route"
+            assert reply == expected_replies[turn["route"]], "CrewAI ran the wrong handler"
         assert len(flow.state.decisions) == len(SCENARIO["turns"]), "One decision per turn"
         assert len(flow.conversation_messages) == 2 * len(SCENARIO["turns"])
     finally:

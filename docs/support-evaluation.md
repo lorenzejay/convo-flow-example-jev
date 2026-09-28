@@ -28,6 +28,8 @@ The earlier yes/no item-identification check scored 12/13 on the original cases 
 
 The evaluator stores raw responses, usage, errors, component scores, final routes, and timing under git-ignored `eval_results/`. The final one-pass comparison is `eval_results/20260928T031102Z/`; the three-repeat Jev run is `eval_results/20260928T031031Z/`. Estimated cost uses returned token usage and the configured [TypeSafe](https://docs.typesafe.ai/models) and [OpenAI](https://developers.openai.com/api/docs/pricing) list rates, excluding handler work and provider discounts. Request errors are counted separately from accuracy on completed responses.
 
+The 31-case scores measure provider decisions and the application's final-route rule; they do not run CrewAI for each case. Separately, `smoke_check.py` exercises the real `handle_turn()` lifecycle with mocked Jev responses, and `flow.py` checks the live four-turn `last_intent` and handler replies. Those checks cover CrewAI's [built-in `route_conversation` dispatch](https://docs.crewai.com/en/guides/flows/conversational-flows) to our custom listeners. The allowed routes do not include CrewAI's built-in `converse` route, so this repository does not evaluate whether Jev selects it or whether its generation handler runs.
+
 Run the checks and comparison with:
 
 ```sh
