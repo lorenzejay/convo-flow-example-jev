@@ -1,4 +1,4 @@
-"""Small live routing diagnostic. No dependencies; see docs/evaluation.md."""
+"""Small live support-routing diagnostic. No dependencies; see docs/support-evaluation.md."""
 from __future__ import annotations
 
 import argparse
@@ -16,7 +16,7 @@ import urllib.request
 from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parent
-# USD / million tokens: input, cached input, output, cache writes. Sources in evaluation.md.
+# USD / million tokens: input, cached input, output, cache writes. Sources in docs/support-evaluation.md.
 MODELS = {
     "jev": {"provider": "jev", "model": "jev-1.13.0", "key": "TYPESAFE_API_KEY", "rates": [0.042, 0.042, 0, 0.042]},
     "openai-fast": {"provider": "openai", "model": "gpt-6-luna", "key": "OPENAI_API_KEY", "effort": "none", "rates": [0.10, 0.01, 0.50, 0.125]},
@@ -33,6 +33,16 @@ def validate_dataset(dataset):
         assert case["expected"] in task["criteria"], case["id"]
         assert case["messages"][-1]["role"] == "user", case["id"]
         assert case["slice"] and case["rationale"]
+        if "item_question" in task:
+            assert case["expected_raw_route"] in task["criteria"], case["id"]
+            assert type(case["expected_item_action"]) is bool, case["id"]
+            assert case["expected_item"] in task["item_criteria"], case["id"]
+            assert case["expected_item_identified"] == (case["expected_item"] != "unresolved"), case["id"]
+            assert case["split"], case["id"]
+            expected = ("clarify" if case["expected_raw_route"] == "returns"
+                        and case["expected_item_action"] and case["expected_item"] == "unresolved"
+                        else case["expected_raw_route"])
+            assert case["expected"] == expected, case["id"]
     assert ids
 
 
@@ -40,14 +50,15 @@ def request_data(config, task, case):
     state = dict(case.get("state", task["state"]), messages=case["messages"])
     properties = {"route": {"type": "string", "enum": list(task["criteria"])}}
     if "item_question" in task:
-        properties.update(item_action={"type": "boolean"}, item_identified={"type": "boolean"})
+        properties.update(item_action={"type": "boolean"}, item={"type": "string", "enum": list(task["item_criteria"])})
     schema = {"type": "object", "properties": properties,
               "required": list(properties), "additionalProperties": False}
     if config["provider"] == "jev":
         questions = {"route": {"type": "choice", "instructions": task["instructions"], "criteria": task["criteria"]}}
         if "item_question" in task:
             questions["item_action"] = {"type": "noul", "instructions": task["action_question"]}
-            questions["item_identified"] = {"type": "noul", "instructions": task["item_question"]}
+            questions["item"] = {"type": "choice", "instructions": task["item_question"],
+                                 "criteria": task["item_criteria"]}
         return "https://api.typesafe.ai/v1/systemone", {
             "model": config["model"], "state": state,
             "questions": questions,
@@ -55,7 +66,8 @@ def request_data(config, task, case):
     instructions = task["instructions"] + "\nAllowed routes and criteria:\n" + json.dumps(task["criteria"], ensure_ascii=False)
     if "item_question" in task:
         instructions += "\nAnswer item_action independently: " + task["action_question"]
-        instructions += "\nAnswer item_identified independently: " + task["item_question"]
+        instructions += "\nAnswer item independently: " + task["item_question"]
+        instructions += "\nAllowed items and criteria:\n" + json.dumps(task["item_criteria"], ensure_ascii=False)
     return "https://api.openai.com/v1/responses", {
         "model": config["model"], "store": False,
         "service_tier": "default",
@@ -67,7 +79,7 @@ def request_data(config, task, case):
     }
 
 
-def parse_response(config, raw, criteria, item_question=False):
+def parse_response(config, raw, criteria, item_criteria=None):
     if config["provider"] == "jev":
         answer = raw["answers"]["route"]
         route, probabilities, confidence = answer["choice"], answer["probabilities"], answer["confidence"]
@@ -79,14 +91,22 @@ def parse_response(config, raw, criteria, item_question=False):
         assert abs(sum(probabilities.values()) - 1) <= tolerance
         assert probabilities[route] >= max(probabilities.values())
         assert type(confidence) in (int, float) and math.isfinite(confidence) and 0 <= confidence <= 1
-        if item_question:
-            item_scores = {}
-            for question in ("item_action", "item_identified"):
-                item_answer = raw["answers"][question]
-                probability = item_answer["noul"]
-                assert item_answer["type"] == "noul"
-                assert type(probability) in (int, float) and math.isfinite(probability) and 0 <= probability <= 1
-                item_scores[question] = probability >= .5
+        if item_criteria:
+            action_answer = raw["answers"]["item_action"]
+            item_action_score = action_answer["noul"]
+            assert action_answer["type"] == "noul"
+            assert type(item_action_score) in (int, float) and math.isfinite(item_action_score) and 0 <= item_action_score <= 1
+            item_action = item_action_score >= .5
+            item_answer = raw["answers"]["item"]
+            item = item_answer["choice"]
+            item_probabilities = item_answer["probabilities"]
+            assert item_answer["type"] == "choice" and item in item_criteria
+            assert set(item_probabilities) == set(item_criteria)
+            assert all(type(v) in (int, float) and math.isfinite(v) and 0 <= v <= 1 for v in item_probabilities.values())
+            assert abs(sum(item_probabilities.values()) - 1) <= .02
+            assert item_probabilities[item] >= max(item_probabilities.values())
+            item_confidence = item_answer["confidence"]
+            assert type(item_confidence) in (int, float) and math.isfinite(item_confidence) and 0 <= item_confidence <= 1
     else:
         assert raw["status"] == "completed", "Response did not complete"
         output = "".join(c["text"] for o in raw["output"] if o["type"] == "message"
@@ -94,15 +114,18 @@ def parse_response(config, raw, criteria, item_question=False):
         parsed = json.loads(output)
         route = parsed["route"]
         probabilities = confidence = None
-        if item_question:
-            item_scores = {question: parsed[question] for question in ("item_action", "item_identified")}
-            assert all(type(value) is bool for value in item_scores.values())
+        if item_criteria:
+            item_action, item = parsed["item_action"], parsed["item"]
+            assert type(item_action) is bool and item in item_criteria
     assert route in criteria
     result = {"route": route, "probabilities": probabilities, "confidence": confidence}
-    if item_question:
-        result.update(raw_route=route, **item_scores,
-                      route="clarify" if route == "returns" and item_scores["item_action"]
-                      and not item_scores["item_identified"] else route)
+    if item_criteria:
+        low_item_confidence = config["provider"] == "jev" and item_confidence < .6
+        result.update(raw_route=route, item_action=item_action, item=item,
+                      route="clarify" if route == "returns" and item_action
+                      and (item == "unresolved" or low_item_confidence) else route)
+        if config["provider"] == "jev":
+            result.update(item_action_score=item_action_score, item_confidence=item_answer["confidence"])
     return result
 
 
@@ -130,7 +153,7 @@ def call(config, task, case):
             raise ValueError("Provider response must be a JSON object")
         record.update(resolved_model=raw.get("model"), usage=raw.get("usage", {}))
         record["estimated_cost_usd"] = estimated_cost(config, record["usage"])
-        record.update(parse_response(config, raw, task["criteria"], "item_question" in task))
+        record.update(parse_response(config, raw, task["criteria"], task.get("item_criteria")))
     except urllib.error.HTTPError as exc:
         # Store only provider error metadata; never request headers or credentials.
         record["error"] = "HTTP " + str(exc.code)
@@ -179,6 +202,8 @@ def summarize(rows, dataset):
         item = {
             "requests": len(selected), "errors": sum("error" in r for r in selected),
             "accuracy": sum(r.get("route") == r["expected"] for r in selected) / len(selected),
+            "accuracy_on_completed": (sum(r.get("route") == r["expected"] for r in selected if "error" not in r)
+                                      / sum("error" not in r for r in selected)) if any("error" not in r for r in selected) else None,
             "p50_ms": statistics.median(latencies) if latencies else None,
             "p95_ms": latencies[math.ceil(.95 * len(latencies)) - 1] if latencies else None,
             "estimated_cost_usd": sum(costs), "requests_with_known_cost": len(costs),
@@ -190,6 +215,17 @@ def summarize(rows, dataset):
             if not group:
                 continue
             details = score(group, task["criteria"])
+            if "item_question" in task:
+                details["component_accuracy"] = {
+                    predicted: sum(r.get(predicted) == r[expected] for r in group) / len(group)
+                    for predicted, expected in (
+                        ("raw_route", "expected_raw_route"),
+                        ("item_action", "expected_item_action"),
+                        ("item", "expected_item"),
+                    )
+                }
+                details["splits"] = {split: score([r for r in group if r["split"] == split], task["criteria"])
+                                     for split in sorted({r["split"] for r in group})}
             details["slices"] = {s: score([r for r in group if r["slice"] == s], task["criteria"])
                                  for s in sorted({r["slice"] for r in group})}
             for slice_score in details["slices"].values():
@@ -220,6 +256,17 @@ def self_check(dataset):
             "probabilities": dict.fromkeys(["winner"] + [f"other_{i}" for i in range(76)], 0.)}
     many["probabilities"]["winner"] = .99
     assert parse_response(cfg, {"answers": {"route": many}}, many["probabilities"])["route"] == "winner"
+    readiness = dataset["tasks"]["return_readiness"]
+    item_probs = dict.fromkeys(readiness["item_criteria"], 0.0)
+    item_probs.update(sport_earbuds=.93, travel_speaker=.04, unresolved=.02)  # Rounded sum: .99.
+    item_response = {"answers": {
+        "route": {"type": "choice", "choice": "returns", "probabilities": {"order": 0, "returns": 1, "clarify": 0}, "confidence": 1},
+        "item_action": {"type": "noul", "noul": .95},
+        "item": {"type": "choice", "choice": "sport_earbuds", "probabilities": item_probs, "confidence": .9},
+    }}
+    assert parse_response(cfg, item_response, readiness["criteria"], readiness["item_criteria"])["route"] == "returns"
+    item_response["answers"]["item"]["confidence"] = .5
+    assert parse_response(cfg, item_response, readiness["criteria"], readiness["item_criteria"])["route"] == "clarify"
     rows = [{"route": "order", "confidence": .4, "expected": "order"},
             {"route": "order", "confidence": .1, "expected": "clarify"}, {"error": "timeout", "expected": "order"}]
     raw, gated = score(rows, ["order", "clarify"]), score(rows, ["order", "clarify"], .5)
@@ -281,6 +328,9 @@ def main():
             rng.shuffle(models)
             for model in models:
                 row = {k: case[k] for k in ("id", "task", "slice", "expected")}
+                for key in ("expected_raw_route", "expected_item_action", "expected_item", "split"):
+                    if key in case:
+                        row[key] = case[key]
                 row.update(model_key=model, repeat=rep, timestamp=datetime.now(timezone.utc).isoformat())
                 row.update(call(MODELS[model], dataset["tasks"][case["task"]], case))
                 rows.append(row)

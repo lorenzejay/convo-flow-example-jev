@@ -26,7 +26,7 @@ The program sends four support messages in one session. Order #4021 contains thr
 3. “Can I return one of the other blue items too?”
 4. “I mean the Sport Earbuds.”
 
-Each turn makes one request to `https://api.typesafe.ai/v1/systemone` using `jev-latest`. The request sends conversation history, the sample order, a Choice question for `order`/`returns`/`clarify`, and two yes/no questions: whether this is an item-specific return request and whether one order item is identified. A return request with an unidentified item goes to `clarify`. General return-policy questions can reach `returns` without identifying an item.
+Each turn makes one request to `https://api.typesafe.ai/v1/systemone` using `jev-latest`. The request sends conversation history, the sample order, a Choice question for `order`/`returns`/`clarify`, a yes/no question for whether the customer requests help with a particular item, and a Choice question naming that item or `unresolved`. An item-specific return request goes to `clarify` when the item is unresolved or the item Choice confidence is below 0.60. General return-policy questions can reach `returns` without identifying an item.
 
 Handlers return sample replies; they never modify orders or initiate refunds. Replace them with your own read-only tools or agent calls as needed. No OpenAI key is needed for this example's routing or replies.
 
@@ -40,7 +40,7 @@ This runs the real CrewAI lifecycle with mocked HTTP responses. It checks that t
 
 ## Evaluate the router
 
-The [support evaluation](docs/support-evaluation.md) compares Jev with GPT-6 Luna and Astra on 13 authored return-readiness conversations. The earlier 20-case, route-only result remains in that document as historical context.
+The [support evaluation](docs/support-evaluation.md) compares Jev with GPT-6 Luna and Astra on 31 authored return-readiness conversations and explains [where Jev fits in a CrewAI flow](docs/support-evaluation.md#where-jev-fits-in-a-crewai-flow). All three reached 31/31 final routes in one live pass. Jev's raw item Choice was 30/31; its low-confidence abstention corrected that final route. These cases were used to tune the demo and do not establish production accuracy.
 
 ```sh
 # Validate the dataset and scoring without API calls.
@@ -58,8 +58,8 @@ The evaluator defaults to `return_readiness` and saves raw responses, usage, tim
 ```text
 handle_turn(message)
   → route_turn(): history + order + three typed questions → Jev
-  → validate Choice and two yes/no answers
-  → returns + item-specific request + unidentified item ? clarify : choice
+  → validate two Choice answers and one yes/no answer
+  → returns + item-specific request + (unresolved or low-confidence item) ? clarify : choice
   → @listen(selected_route)
   → append assistant reply and retain session state
 ```
@@ -77,7 +77,7 @@ A Jev Choice answer contains:
 }
 ```
 
-These JSON values are illustrative. Confidence is a separate statistic derived by TypeSafe from the probability distribution, not the winning probability or a guarantee of correctness. This demo does not use a route-confidence threshold; the previous 0.50 override incorrectly clarified a straightforward order question in one live run.
+These JSON values are illustrative. Confidence is a separate statistic derived by TypeSafe from the probability distribution, not the winning probability or a guarantee of correctness. This demo uses a tuned 0.60 confidence floor for the **item Choice** only; it does not use a route-confidence threshold.
 
 The original Choice answer stays in `decision["answer"]`, even when the item check selects a different handler. Missing or invalid answer fields fail before a handler executes.
 
