@@ -1,10 +1,10 @@
 # CrewAI Conversational Flows × Jev
 
-A small, runnable example that uses TypeSafe's Jev model to choose a route inside a real CrewAI conversational flow.
+A small, runnable example that uses TypeSafe's Jev model to route support turns and check whether an item-specific return request is ready to proceed inside a real CrewAI conversational flow.
 
 ![Illustrative routing walkthrough](docs/demo.gif)
 
-**The GIF uses authored example timings, costs, probabilities and confidence scores. It is not a live benchmark.** The Python program makes actual Jev requests when you supply a key and prints the returned answer, measured request latency and estimated cost.
+**The GIF shows the earlier three-turn, route-only illustration. Its timings, costs, probabilities and confidence scores are authored, not live measurements.** The Python program now makes actual Jev requests for three questions per turn and prints the returned answers, measured request latency and estimated cost.
 
 ## Run with Jev
 
@@ -19,13 +19,14 @@ cp .env.example .env
 uv run --env-file .env python flow.py
 ```
 
-The program sends three support messages in one session:
+The program sends four support messages in one session. Order #4021 contains three blue products:
 
-1. “Where are my headphones?”
+1. “Where are my Studio headphones?”
 2. “They arrived damaged. Can I return them?”
-3. “What about the other one?”
+3. “Can I return one of the other blue items too?”
+4. “I mean the Sport Earbuds.”
 
-Each turn makes one request to `https://api.typesafe.ai/v1/systemone` using `jev-latest`. It sends the conversation history, sample order data, and three allowed routes: `order`, `returns`, and `clarify`. Live model choices can differ from the illustrative replay.
+Each turn makes one request to `https://api.typesafe.ai/v1/systemone` using `jev-latest`. The request sends conversation history, the sample order, a Choice question for `order`/`returns`/`clarify`, and two yes/no questions: whether this is an item-specific return request and whether one order item is identified. A return request with an unidentified item goes to `clarify`. General return-policy questions can reach `returns` without identifying an item.
 
 Handlers return sample replies; they never modify orders or initiate refunds. Replace them with your own read-only tools or agent calls as needed. No OpenAI key is needed for this example's routing or replies.
 
@@ -35,15 +36,30 @@ Handlers return sample replies; they never modify orders or initiate refunds. Re
 uv run python smoke_check.py
 ```
 
-This runs the real CrewAI lifecycle with mocked HTTP responses. It checks that all three handlers execute, history is retained, provider output is preserved, and low confidence routes to clarification even when Jev's highest-probability choice is another route. No model API requests are made. Installing dependencies still requires network access on the first run.
+This runs the real CrewAI lifecycle with mocked HTTP responses. It checks that the ambiguous third turn reaches `clarify` even when Jev chooses `returns`, and that the resolved fourth turn reaches `returns`. No model API requests are made. Installing dependencies still requires network access on the first run.
+
+## Evaluate the router
+
+The [support evaluation](docs/support-evaluation.md) compares Jev with GPT-6 Luna and Astra on 13 authored return-readiness conversations. The earlier 20-case, route-only result remains in that document as historical context.
+
+```sh
+# Validate the dataset and scoring without API calls.
+python3 eval_router.py --check
+# Compare return readiness: requires TYPESAFE_API_KEY and OPENAI_API_KEY.
+uv run --env-file .env --no-project python3 eval_router.py
+# Jev only:
+uv run --env-file .env --no-project python3 eval_router.py --models jev
+```
+
+The evaluator defaults to `return_readiness` and saves raw responses, usage, timings and scores under git-ignored `eval_results/`. These authored cases are a diagnostic; they cannot establish production accuracy.
 
 ## How routing works
 
 ```text
 handle_turn(message)
-  → route_turn(): history + allowed routes → Jev
-  → validate choice, probabilities and confidence
-  → confidence < 0.50 ? clarify : choice
+  → route_turn(): history + order + three typed questions → Jev
+  → validate Choice and two yes/no answers
+  → returns + item-specific request + unidentified item ? clarify : choice
   → @listen(selected_route)
   → append assistant reply and retain session state
 ```
@@ -61,9 +77,9 @@ A Jev Choice answer contains:
 }
 ```
 
-These JSON values are illustrative. Confidence is a separate statistic derived by TypeSafe from the probability distribution, not the winning probability or a guarantee of correctness. The `0.50` floor is this demo's policy; evaluate thresholds on your own data.
+These JSON values are illustrative. Confidence is a separate statistic derived by TypeSafe from the probability distribution, not the winning probability or a guarantee of correctness. This demo does not use a route-confidence threshold; the previous 0.50 override incorrectly clarified a straightforward order question in one live run.
 
-The original answer stays in `decision["answer"]`, even when the application policy selects a different handler. Missing or invalid answer fields fail before a handler executes.
+The original Choice answer stays in `decision["answer"]`, even when the item check selects a different handler. Missing or invalid answer fields fail before a handler executes.
 
 ## Measurement and configuration
 
@@ -73,13 +89,15 @@ The original answer stays in `decision["answer"]`, even when the application pol
 - `latency_ms`: wall-clock time for the HTTP request and JSON response.
 - `estimated_cost_usd`: reported input tokens multiplied by the configured input rate. Assumes zero output-token cost; excludes tools, infrastructure and handler work.
 
-The source was checked with mocked responses, not a live provider benchmark. The GIF's LLM comparison is illustrative; this repository's Python example calls Jev only. Tracing and CrewAI telemetry are disabled by default unless you explicitly enable them in your environment.
+The flow lifecycle is checked with mocked responses, and the [support evaluation](docs/support-evaluation.md) contains live readiness measurements. The GIF's LLM comparison remains illustrative. `flow.py` calls Jev only. Tracing and CrewAI telemetry are disabled by default unless you explicitly enable them in your environment.
 
 ## Files
 
 - `flow.py`: actual CrewAI flow and TypeSafe HTTP call.
 - `scenario.json`: sample conversation, order state, and authored visual fixtures.
-- `smoke_check.py`: no-key lifecycle and confidence-policy check.
+- `smoke_check.py`: no-key lifecycle and item-readiness check.
+- `eval_router.py` and `eval_cases.json`: support readiness comparison and authored cases.
+- `docs/support-evaluation.md`: payload audit and live readiness results.
 - `docs/demo.gif`: 18-second, 1080p walkthrough.
 
 ## References
